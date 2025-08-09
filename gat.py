@@ -14,7 +14,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import train_test_split
 
 from torch_geometric.data import HeteroData
-from torch_geometric.nn import HeteroConv, SAGEConv
+from torch_geometric.nn import HeteroConv, GATv2Conv
 
 # ------------------------- I/O -------------------------
 TRAIN_PATH = Path('/home/team/data/pmt_pmt/raw/training_data.csv')
@@ -160,10 +160,6 @@ class TripletGraph:
         mt_edges = [(self.mid[m], self.tid[t]) for m,t in zip(df_edges["HLA"], df_edges["CDR3"])]
         data["mhc","presents_to","tcr"].edge_index = self._edge_index(mt_edges)
 
-        # P-T edges
-        pt_edges = [(self.pid[p], self.tid[t]) for p,t in zip(df_edges["Antigen"], df_edges["CDR3"])]
-        data["pep","binds","tcr"].edge_index = self._edge_index(pt_edges)
-
         def pack(df: pd.DataFrame) -> Dict[str, torch.Tensor]:
             return {
                 "pep": torch.tensor([self.pid[p] for p in df["Antigen"].values], dtype=torch.long),
@@ -179,51 +175,75 @@ class TripletGraph:
         return data
 
 
-class TripletOnlyGNN(nn.Module):
-    def __init__(self, n_pep, n_mhc, n_tcr, emb_dim=128, hidden=256, layers=2, dropout=0.2):
+class TripletGAT(nn.Module):
+    def __init__(self, n_pep, n_mhc, n_tcr, emb_dim=128, hidden=256, layers=2, dropout=0.2, heads=4):
         super().__init__()
         self.dropout = dropout
+        self.heads = heads
+
+        # Инициализируем обучаемые эмбеддинги узлов
         self.emb = nn.ModuleDict({
             "pep": nn.Embedding(n_pep, emb_dim),
             "mhc": nn.Embedding(n_mhc, emb_dim),
             "tcr": nn.Embedding(n_tcr, emb_dim),
         })
-        self.layers = nn.ModuleList()
-        for _ in range(layers):
-            self.layers.append(
-                HeteroConv({
-                    ("pep","binds","mhc"): SAGEConv((-1,-1), hidden),
-                    ("mhc","presents_to","tcr"): SAGEConv((-1,-1), hidden),
-                    ("pep","binds","tcr"): SAGEConv((-1,-1), hidden),
-                }, aggr="mean")
-            )
-        # приведение всех трёх типов к единому hidden
+
+        # Проекция эмбеддингов пептидов к размерности hidden (GAT возвращает hidden при concat=False)
         self.proj_pep = nn.Linear(emb_dim, hidden)
         self.proj_mhc = nn.Identity()
         self.proj_tcr = nn.Identity()
 
+        # Слои гетерогенного внимания
+        self.layers = nn.ModuleList()
+        self.layers.append(
+            HeteroConv({
+            ("pep", "binds", "mhc"): GATv2Conv(
+                (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
+                add_self_loops=False   # <-- ВАЖНО
+            ),
+            ("mhc", "presents_to", "tcr"): GATv2Conv(
+                (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
+                add_self_loops=False   # <-- ВАЖНО
+            ),
+            }, aggr="mean")
+        )
+
+        # Голова на тройку (pep, mhc, tcr)
         self.head = nn.Sequential(
-            nn.Linear(3*hidden, hidden),
-            nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, 1)
+            nn.Linear(3 * hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, 1),
         )
 
     def _node_embs(self, data: HeteroData, device) -> Dict[str, torch.Tensor]:
+        # Инициализация скрытых представлений
         h = {
             "pep": self.emb["pep"](torch.arange(data["pep"].num_nodes, device=device)),
             "mhc": self.emb["mhc"](torch.arange(data["mhc"].num_nodes, device=device)),
             "tcr": self.emb["tcr"](torch.arange(data["tcr"].num_nodes, device=device)),
         }
+
         edge_index_dict = {
-            ("pep","binds","mhc"): data["pep","binds","mhc"].edge_index,
-            ("mhc","presents_to","tcr"): data["mhc","presents_to","tcr"].edge_index,
-            ("pep","binds","tcr"): data["pep","binds","tcr"].edge_index,
+            ("pep", "binds", "mhc"): data["pep", "binds", "mhc"].edge_index,
+            ("mhc", "presents_to", "tcr"): data["mhc", "presents_to", "tcr"].edge_index,
         }
+
         for conv in self.layers:
-            out = conv(h, edge_index_dict)  # вернёт только dst-типы (mhc, tcr)
-            out = {k: F.dropout(F.relu(v), p=self.dropout, training=self.training) for k,v in out.items()}
-            # сохраняем представления для типов, которых нет в out (pep)
-            h = {k: out.get(k, h[k]) for k in h.keys()}
+            out = conv(h, edge_index_dict)  # вернёт dst-типы ('mhc', 'tcr')
+            # residual + ELU + Dropout
+            new_h = {}
+            for k in h.keys():
+                if k in out:
+                    x = out[k]
+                    if x.shape[-1] == h[k].shape[-1]:
+                        x = x + h[k]
+                    x = F.elu(x)
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+                    new_h[k] = x
+                else:
+                    new_h[k] = h[k]
+            h = new_h
         return h
 
     def forward_logits(self, data: HeteroData, device, pack: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -241,19 +261,24 @@ class Runner:
         self.data = data
 
         # переносим рёбра на девайс
-        for et in data.edge_types:
+        for et in [("pep","binds","mhc"), ("mhc","presents_to","tcr")]:
             data[et].edge_index = data[et].edge_index.to(self.device)
         # пакеты индексов
         for split in ["triplet_train","triplet_valid","triplet_test"]:
             for k,v in data[split].items():
                 data[split][k] = v.to(self.device)
 
-        self.model = TripletOnlyGNN(
+        self.model = TripletGAT(
             n_pep=data["pep"].num_nodes,
             n_mhc=data["mhc"].num_nodes,
             n_tcr=data["tcr"].num_nodes,
-            emb_dim=cfg.emb_dim, hidden=cfg.hidden, layers=cfg.layers, dropout=cfg.dropout
+            emb_dim=cfg.emb_dim,
+            hidden=cfg.hidden,
+            layers=cfg.layers,
+            dropout=cfg.dropout,
+            heads=4,
         ).to(self.device)
+
         self.opt = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         self.crit = nn.BCEWithLogitsLoss()
 
