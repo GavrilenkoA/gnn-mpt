@@ -10,14 +10,14 @@ model = AutoModel.from_pretrained("dmis-lab/biobert-v1.1")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-def embed_text(text, model):
-    input_ids = torch.tensor(tokenizer.encode(text)).unsqueeze(0).to(device)  # Batch size 1
+def embed_text(text: str, model: AutoModel) -> torch.Tensor:
+    input_ids = torch.tensor(tokenizer.encode(text)).unsqueeze(0).to(device)
     outputs = model(input_ids)
-    last_hidden_states = outputs[0]  # The last hidden-state is the first element of the output tuple
+    last_hidden_states = outputs[0]
     return last_hidden_states
 
-def main(key: str):
-    descriptions_path = f"/home/team/get_descriptions/{key}.csv"
+def main(key: str) -> None:
+    descriptions_path = f"{key}.csv"
     seq_only_path = f"{key}_sequences.csv"
     embed_path = f"{key}_embeddings.npy"
 
