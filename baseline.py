@@ -72,7 +72,7 @@ def generate_triplet_negatives(
 train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
 test_df_labeled  = generate_triplet_negatives(test_df,  k=1, seed=123)
 
-# ------------------------- utils -------------------------
+
 def set_seed(seed: int):
     import random
     random.seed(seed); np.random.seed(seed)
@@ -174,7 +174,7 @@ class TripletGraph:
         self.data = data
         return data
 
-# ------------------------- model -------------------------
+
 class TripletOnlyGNN(nn.Module):
     def __init__(self, n_pep, n_mhc, n_tcr, emb_dim=128, hidden=256, layers=2, dropout=0.2):
         super().__init__()
@@ -295,7 +295,7 @@ class Runner:
         print(json.dumps({"best_val_pr_auc": best_val_pr, "test_loss": te_loss, "test": te_m}))
         return {"best_val_pr_auc": best_val_pr, "test": te_m, "ckpt": self.cfg.ckpt_path}
 
-# ------------------------- main -------------------------
+
 def main():
     cfg = Config()
     set_seed(cfg.seed)
