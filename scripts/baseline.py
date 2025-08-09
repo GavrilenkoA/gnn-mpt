@@ -17,8 +17,8 @@ from torch_geometric.data import HeteroData
 from torch_geometric.nn import HeteroConv, SAGEConv
 
 # ------------------------- I/O -------------------------
-TRAIN_PATH = Path('/home/team/data/pmt_pmt/raw/training_data.csv')
-TEST_PATH  = Path('/home/team/data/pmt_pmt/raw/testing_data.csv')
+TRAIN_PATH = Path('/disk/10tb/home/gavrilenko/gnn-mpt/data/raw/training_data.csv')
+TEST_PATH  = Path('/disk/10tb/home/gavrilenko/gnn-mpt/data/raw/testing_data.csv')
 
 train_df = pd.read_csv(TRAIN_PATH).drop_duplicates()
 test_df  = pd.read_csv(TEST_PATH).drop_duplicates()
@@ -160,9 +160,7 @@ class TripletGraph:
         mt_edges = [(self.mid[m], self.tid[t]) for m,t in zip(df_edges["HLA"], df_edges["CDR3"])]
         data["mhc","presents_to","tcr"].edge_index = self._edge_index(mt_edges)
 
-        # P-T edges
-        pt_edges = [(self.pid[p], self.tid[t]) for p,t in zip(df_edges["Antigen"], df_edges["CDR3"])]
-        data["pep","binds","tcr"].edge_index = self._edge_index(pt_edges)
+        # (P-T edges removed)
 
         def pack(df: pd.DataFrame) -> Dict[str, torch.Tensor]:
             return {
@@ -194,7 +192,6 @@ class TripletOnlyGNN(nn.Module):
                 HeteroConv({
                     ("pep","binds","mhc"): SAGEConv((-1,-1), hidden),
                     ("mhc","presents_to","tcr"): SAGEConv((-1,-1), hidden),
-                    ("pep","binds","tcr"): SAGEConv((-1,-1), hidden),
                 }, aggr="mean")
             )
         # приведение всех трёх типов к единому hidden
@@ -217,7 +214,6 @@ class TripletOnlyGNN(nn.Module):
         edge_index_dict = {
             ("pep","binds","mhc"): data["pep","binds","mhc"].edge_index,
             ("mhc","presents_to","tcr"): data["mhc","presents_to","tcr"].edge_index,
-            ("pep","binds","tcr"): data["pep","binds","tcr"].edge_index,
         }
         for conv in self.layers:
             out = conv(h, edge_index_dict)  # вернёт только dst-типы (mhc, tcr)
