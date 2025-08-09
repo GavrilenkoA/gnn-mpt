@@ -17,8 +17,8 @@ from torch_geometric.data import HeteroData
 from torch_geometric.nn import HeteroConv, SAGEConv
 
 # ------------------------- I/O -------------------------
-TRAIN_PATH = Path('/disk/10tb/home/gavrilenko/gnn-mpt/data/raw/training_data.csv')
-TEST_PATH  = Path('/disk/10tb/home/gavrilenko/gnn-mpt/data/raw/testing_data.csv')
+TRAIN_PATH = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/training_data.csv')
+TEST_PATH  = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/testing_data.csv')
 
 train_df = pd.read_csv(TRAIN_PATH).drop_duplicates()
 test_df  = pd.read_csv(TEST_PATH).drop_duplicates()
@@ -97,7 +97,7 @@ class Config:
     epochs: int = 30
     lr: float = 2e-3
     weight_decay: float = 1e-4
-    device: str = "cuda"
+    device: str = "cuda:1"
 
     early_patience: int = 6
     ckpt_path: str = "best_triplet.pt"
