@@ -16,12 +16,13 @@ from sklearn.model_selection import train_test_split
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import HeteroConv, GATv2Conv
 
-# ------------------------- I/O -------------------------
+
 TRAIN_PATH = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/training_data.csv')
 TEST_PATH = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/testing_data.csv')
 
 train_df = pd.read_csv(TRAIN_PATH).drop_duplicates()
 test_df  = pd.read_csv(TEST_PATH).drop_duplicates()
+
 
 # убираем пересечение трёх полей из теста, чтобы не дублировать записи
 merged_df = test_df.merge(train_df, on=['Antigen', 'HLA', 'CDR3'], how='left', indicator=True)
@@ -69,8 +70,9 @@ def generate_triplet_negatives(
     neg = pd.DataFrame(neg_rows, columns=[pep_col, mhc_col, tcr_col]); neg["label"] = 0
     return pd.concat([pos, neg], ignore_index=True)
 
-train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
-test_df_labeled  = generate_triplet_negatives(test_df,  k=1, seed=123)
+
+train_df_labeled = generate_triplet_negatives(train_df, k=3, seed=42)
+test_df_labeled = generate_triplet_negatives(test_df, k=1, seed=123)
 
 
 def set_seed(seed: int):
@@ -101,6 +103,7 @@ class Config:
 
     early_patience: int = 6
     ckpt_path: str = "best_triplet.pt"
+
 
 # ------------------------- graph from DFs -------------------------
 class TripletGraph:
@@ -261,11 +264,11 @@ class Runner:
         self.data = data
 
         # переносим рёбра на девайс
-        for et in [("pep","binds","mhc"), ("mhc","presents_to","tcr")]:
+        for et in [("pep", "binds", "mhc"), ("mhc", "presents_to", "tcr")]:
             data[et].edge_index = data[et].edge_index.to(self.device)
         # пакеты индексов
-        for split in ["triplet_train","triplet_valid","triplet_test"]:
-            for k,v in data[split].items():
+        for split in ["triplet_train", "triplet_valid", "triplet_test"]:
+            for k, v in data[split].items():
                 data[split][k] = v.to(self.device)
 
         self.model = TripletGAT(

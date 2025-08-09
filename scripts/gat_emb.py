@@ -21,7 +21,7 @@ TRAIN_PATH = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/training_data.csv')
 TEST_PATH = Path('/mnt/nfs_protein/gavrilenko/mpt/raw/testing_data.csv')
 
 train_df = pd.read_csv(TRAIN_PATH).drop_duplicates()
-test_df  = pd.read_csv(TEST_PATH).drop_duplicates()
+test_df = pd.read_csv(TEST_PATH).drop_duplicates()
 
 # убираем пересечение трёх полей из теста, чтобы не дублировать записи
 merged_df = test_df.merge(train_df, on=['Antigen', 'HLA', 'CDR3'], how='left', indicator=True)
@@ -69,6 +69,7 @@ def generate_triplet_negatives(
     neg = pd.DataFrame(neg_rows, columns=[pep_col, mhc_col, tcr_col]); neg["label"] = 0
     return pd.concat([pos, neg], ignore_index=True)
 
+
 train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
 test_df_labeled = generate_triplet_negatives(test_df, k=1, seed=123)
 
@@ -77,6 +78,7 @@ def set_seed(seed: int):
     import random
     random.seed(seed); np.random.seed(seed)
     torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+
 
 def bin_metrics(y_true: np.ndarray, y_score: np.ndarray) -> Dict[str, float]:
     return {
