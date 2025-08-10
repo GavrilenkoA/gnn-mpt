@@ -21,7 +21,7 @@ pip install -r requirements.txt
 - Data download: [Google Drive folder](https://drive.google.com/drive/folders/17ht6OBhv34LrZBm9Y2ow_A3KkuAk8tmG)
 - Then adjust hardcoded paths inside the target script if needed.
 
-3) Run a baseline model, e.g. a GAT-based triplet classifier:
+3) Run a model, e.g. a GAT-based triplet classifier:
 
 ```bash
 python scripts/gat.py
@@ -103,7 +103,7 @@ All training scripts share common ideas:
 - Checkpoints of the best validation PR-AUC are saved to a path set by `ckpt_*` in each script
 - Determinism: `set_seed` is called from `main()`
 
-Baselines
+Models
 
 - scripts/gnn.py
   - Architecture: random `nn.Embedding` for each node type, HeteroConv with SAGEConv on (pep–mhc) and (mhc–tcr), MLP head over concatenated (pep, mhc, tcr) states
