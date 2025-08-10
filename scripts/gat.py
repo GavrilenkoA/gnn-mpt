@@ -71,7 +71,7 @@ def generate_triplet_negatives(
     return pd.concat([pos, neg], ignore_index=True)
 
 
-train_df_labeled = generate_triplet_negatives(train_df, k=3, seed=42)
+train_df_labeled = generate_triplet_negatives(train_df, k=2, seed=42)
 test_df_labeled = generate_triplet_negatives(test_df, k=1, seed=123)
 
 
