@@ -38,6 +38,11 @@ gnn-mpt/
 │ ├─ gnn.py # SAGEConv baseline on (pep–mhc, mhc–tcr) graph with random nn.Embedding
 │ ├─ gat.py # GATv2 baseline on the same graph with random nn.Embedding
 │ ├─ gat_emb.py # GATv2 using precomputed pLM embeddings (.npz banks) for pep/mhc/tcr
+| ├─ gat_emb_experimnets.py # GATv2 using precomputed pLM embeddings (.npz banks) for mhc/tcr and pLM + BioBERT text embeddings for pep
+| ├─ gat_optuna.py # Optimization of training parameters with optuna
+| ├─ gat_optimized.py # Training with optuna optimized parameters.
+| ├─ gat_emb_random_one.py # Random init of pep/tcr + precomputed one-not embedding for mhc
+| ├─ gat_emb_esmc.py # GATv2 using ESM C embeddings (.npz banks) for pep/mhc/tcr
 │ ├─ gat2stage.py # Two-stage training: pairs (PM/PT) → triplets (PMT)
 │ ├─ mlp.py # Triplet MLP baseline without message passing
 │ └─ pmt_meta_learn.py # Multi-task training with PM, PT (BCE) and PMT (InfoNCE/DMF)
