@@ -70,6 +70,7 @@ def generate_triplet_negatives(
     return pd.concat([pos, neg], ignore_index=True)
 
 train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
+train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
 test_df_labeled = generate_triplet_negatives(test_df, k=1, seed=123)
 
 
@@ -97,7 +98,7 @@ class Config:
     epochs: int = 30
     lr: float = 2e-3
     weight_decay: float = 1e-4
-    device: str = "cuda:1"
+    device: str = "cuda:0"
 
     early_patience: int = 6
     ckpt_path: str = "best_triplet.pt"
@@ -200,9 +201,9 @@ class TripletGraph:
         self.data: HeteroData = None
 
         # банки эмбеддингов
-        self.pep_bank = load_bank('/home/team/data/embeddings/raw/peptides_data.npz')
-        self.tcr_bank = load_bank('/home/team/data/embeddings/raw/tcr_data.npz')
-        self.mhc_bank = load_bank('/home/team/data/embeddings/raw/cd .npz')
+        self.pep_bank = load_bank('/home/team/data/embeddings/peptides_data.npz')
+        self.tcr_bank = load_bank('/home/team/data/embeddings/tcr_data.npz')
+        self.mhc_bank = load_bank('/home/team/data/embeddings/mhc_data.npz')
 
     def build_id_maps(self):
         all_p = pd.Index(pd.unique(pd.concat([self.df_tr_all["Antigen"], self.df_te_all["Antigen"]])))
@@ -257,9 +258,13 @@ class TripletGraph:
         data["triplet_test"]  = pack(df_te)
 
         # ---------- ВАЖНО: подкладываем pLM эмбеддинги вместо nn.Embedding ----------
-        data["pep"].x = self.pep_bank.subset_by_vocab(self.pid, missing="zeros")  # (|P|, Dp)
+        n_pep = data["pep"].num_nodes
+        n_mhc = data["mhc"].num_nodes
+        n_tcr = data["tcr"].num_nodes
+        emb_dim = self.cfg.emb_dim
+        data["pep"].x = nn.Embedding(n_pep, emb_dim)(torch.arange(n_pep))  # (|P|, Dp)
         data["mhc"].x = self.mhc_bank.subset_by_vocab(self.mid, missing="zeros")  # (|M|, Dm)
-        data["tcr"].x = self.tcr_bank.subset_by_vocab(self.tid, missing="zeros")  # (|T|, Dt)
+        data["tcr"].x = nn.Embedding(n_tcr, emb_dim)(torch.arange(n_tcr)) # (|T|, Dt)
 
         self.data = data
         return data
@@ -391,7 +396,9 @@ class Runner:
             y = d[split_key]["y"].float()
             loss = self.crit(logits, y)
             if train_mode:
-                self.opt.zero_grad(); loss.backward(); self.opt.step()
+                self.opt.zero_grad()
+                loss.backward(retain_graph=True)
+                self.opt.step()
             with torch.no_grad():
                 scores = torch.sigmoid(logits).detach().cpu().numpy()
                 y_np = y.detach().cpu().numpy()

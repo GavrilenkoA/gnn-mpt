@@ -16,6 +16,8 @@ from sklearn.model_selection import train_test_split
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import HeteroConv, GATv2Conv
 
+import optuna
+
 # ------------------------- I/O -------------------------
 TRAIN_PATH = Path('/home/team/data/pmt_pmt/raw/training_data.csv')
 TEST_PATH = Path('/home/team/data/pmt_pmt/raw/testing_data.csv')
@@ -70,7 +72,7 @@ def generate_triplet_negatives(
     return pd.concat([pos, neg], ignore_index=True)
 
 train_df_labeled = generate_triplet_negatives(train_df, k=1, seed=42)
-test_df_labeled = generate_triplet_negatives(test_df, k=1, seed=123)
+test_df_labeled  = generate_triplet_negatives(test_df,  k=1, seed=123)
 
 
 def set_seed(seed: int):
@@ -97,96 +99,17 @@ class Config:
     epochs: int = 30
     lr: float = 2e-3
     weight_decay: float = 1e-4
-    device: str = "cuda:1"
+    device: str = "cuda"
 
     early_patience: int = 6
     ckpt_path: str = "best_triplet.pt"
 
-
-class EmbBank:
-    """Универсальный банк эмбеддингов: поддерживает два формата .npz."""
-    def __init__(self, mode, npz_obj=None, keys=None, embs=None):
-        # mode: "perkey" | "matrix"
-        self.mode = mode
-        self._z = npz_obj       # NpzFile для perkey
-        self._pos = None        # dict: key->row (для matrix)
-        self._keys = None
-        self._embs = None
-
-        if mode == "matrix":
-            assert keys is not None and embs is not None
-            self._keys = np.asarray(keys, dtype=object)
-            self._embs = np.asarray(embs, dtype=np.float32)
-            self._pos = {str(k): i for i, k in enumerate(self._keys)}
-            self._dim = int(self._embs.shape[1])
-        elif mode == "perkey":
-            assert npz_obj is not None
-            # возьмём размерность из первого элемента
-            first = npz_obj.files[0]
-            self._dim = int(npz_obj[first].shape[-1])
-        else:
-            raise ValueError("Unknown mode")
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    def subset_by_vocab(self, vocab: Dict[str, int], missing: str = "zeros") -> torch.Tensor:
-        D = self.dim
-        if missing == "zeros":
-            out = np.zeros((len(vocab), D), dtype=np.float32)
-        else:
-            out = np.random.normal(0, 0.02, size=(len(vocab), D)).astype(np.float32)
-
-        miss = 0
-        if self.mode == "matrix":
-            for k, idx in vocab.items():
-                j = self._pos.get(str(k))
-                if j is not None:
-                    out[idx] = self._embs[j]
-                else:
-                    miss += 1
-        else:  # perkey
-            z = self._z
-            for k, idx in vocab.items():
-                key = str(k)
-                if key in z.files:
-                    vec = z[key]
-                    # защита от типа/формы
-                    vec = np.asarray(vec, dtype=np.float32).reshape(-1)
-                    if vec.shape[0] != D:
-                        raise ValueError(f"{key}: dim {vec.shape[0]} != {D}")
-                    out[idx] = vec
-                else:
-                    miss += 1
-
-        if miss:
-            print(f"[EmbBank] Missing {miss}/{len(vocab)} keys")
-        return torch.from_numpy(out)
-
-
-def load_bank(npz_path: str) -> EmbBank:
-    z = np.load(npz_path, allow_pickle=True)
-    names = set(z.files)
-    # формат "матрица"
-    has_matrix = ({"keys", "embs"} <= names) or ({"ids", "embeddings"} <= names)
-    if has_matrix:
-        keys = z["keys"] if "keys" in names else z["ids"]
-        embs = z["embs"] if "embs" in names else z["embeddings"]
-        # приведение типов
-        keys = np.array([str(x) for x in keys], dtype=object)
-        embs = np.asarray(embs, dtype=np.float32)
-        return EmbBank(mode="matrix", keys=keys, embs=embs)
-    # формат "per-key": много имён, похожих на реальные ключи, без "keys"/"embs"
-    return EmbBank(mode="perkey", npz_obj=z)
-
-
+# ------------------------- graph from DFs -------------------------
 class TripletGraph:
     """
     - Строим ID‑карты по (train ∪ test), чтобы индексы теста были валидны.
     - Рёбра графа строим ТОЛЬКО из (train ∪ valid), чтобы не было утечки теста.
     - Пакуем индексы трёх выборок (train/valid/test) в отдельные тензоры.
-    - Вместо nn.Embedding используем предвычисленные pLM вектора в data[*].x
     """
     def __init__(self, df_train_labeled: pd.DataFrame, df_test_labeled: pd.DataFrame, cfg: Config):
         self.df_tr_all = df_train_labeled.reset_index(drop=True)
@@ -198,11 +121,6 @@ class TripletGraph:
         self.cfg = cfg
         self.pid = {}; self.mid = {}; self.tid = {}
         self.data: HeteroData = None
-
-        # банки эмбеддингов
-        self.pep_bank = load_bank('/home/team/data/embeddings/raw/peptides_data.npz')
-        self.tcr_bank = load_bank('/home/team/data/embeddings/raw/tcr_data.npz')
-        self.mhc_bank = load_bank('/home/team/data/embeddings/raw/cd .npz')
 
     def build_id_maps(self):
         all_p = pd.Index(pd.unique(pd.concat([self.df_tr_all["Antigen"], self.df_te_all["Antigen"]])))
@@ -255,57 +173,42 @@ class TripletGraph:
         data["triplet_train"] = pack(df_tr)
         data["triplet_valid"] = pack(df_va)
         data["triplet_test"]  = pack(df_te)
-
-        # ---------- ВАЖНО: подкладываем pLM эмбеддинги вместо nn.Embedding ----------
-        data["pep"].x = self.pep_bank.subset_by_vocab(self.pid, missing="zeros")  # (|P|, Dp)
-        data["mhc"].x = self.mhc_bank.subset_by_vocab(self.mid, missing="zeros")  # (|M|, Dm)
-        data["tcr"].x = self.tcr_bank.subset_by_vocab(self.tid, missing="zeros")  # (|T|, Dt)
-
         self.data = data
         return data
 
 
 class TripletGAT(nn.Module):
-    """
-    Берёт предвычисленные эмбеддинги из data['pep'|'mhc'|'tcr'].x,
-    проецирует их в общее пространство hidden и прогоняет через GATv2 на гетерографе.
-    """
-    def __init__(self,
-                 in_dim_pep: int,
-                 in_dim_mhc: int,
-                 in_dim_tcr: int,
-                 hidden: int = 256,
-                 layers: int = 2,
-                 dropout: float = 0.2,
-                 heads: int = 4):
+    def __init__(self, n_pep, n_mhc, n_tcr, emb_dim=128, hidden=256, layers=2, dropout=0.2, heads=4):
         super().__init__()
         self.dropout = dropout
         self.heads = heads
-        self.hidden = hidden
-        self.layers_n = layers
 
-        # Проекции входных размерностей узлов к единому hidden
-        self.in_proj = nn.ModuleDict({
-            "pep": nn.Linear(in_dim_pep, hidden),
-            "mhc": nn.Linear(in_dim_mhc, hidden),
-            "tcr": nn.Linear(in_dim_tcr, hidden),
+        # Инициализируем обучаемые эмбеддинги узлов
+        self.emb = nn.ModuleDict({
+            "pep": nn.Embedding(n_pep, emb_dim),
+            "mhc": nn.Embedding(n_mhc, emb_dim),
+            "tcr": nn.Embedding(n_tcr, emb_dim),
         })
 
-        # Стек гетеро‑GAT слоёв
+        # Проекция эмбеддингов пептидов к размерности hidden (GAT возвращает hidden при concat=False)
+        self.proj_pep = nn.Linear(emb_dim, hidden)
+        self.proj_mhc = nn.Identity()
+        self.proj_tcr = nn.Identity()
+
+        # Слои гетерогенного внимания
         self.layers = nn.ModuleList()
-        for _ in range(layers):
-            self.layers.append(
-                HeteroConv({
-                    ("pep", "binds", "mhc"): GATv2Conv(
-                        (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
-                        add_self_loops=False
-                    ),
-                    ("mhc", "presents_to", "tcr"): GATv2Conv(
-                        (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
-                        add_self_loops=False
-                    ),
-                }, aggr="mean")
-            )
+        self.layers.append(
+            HeteroConv({
+            ("pep", "binds", "mhc"): GATv2Conv(
+                (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
+                add_self_loops=False   # <-- ВАЖНО
+            ),
+            ("mhc", "presents_to", "tcr"): GATv2Conv(
+                (-1, -1), hidden, heads=heads, concat=False, dropout=dropout,
+                add_self_loops=False   # <-- ВАЖНО
+            ),
+            }, aggr="mean")
+        )
 
         # Голова на тройку (pep, mhc, tcr)
         self.head = nn.Sequential(
@@ -315,49 +218,44 @@ class TripletGAT(nn.Module):
             nn.Linear(hidden, 1),
         )
 
-    def _initial_h(self, data: HeteroData, device) -> Dict[str, torch.Tensor]:
-        # берём предвычисленные признаки, проецируем в hidden, делаем нелинейность+дропаут
-        h = {}
-        for ntype in ["pep", "mhc", "tcr"]:
-            if "x" not in data[ntype]:
-                raise ValueError(f"data['{ntype}'].x отсутствует — положи туда предвычисленные эмбеддинги")
-            x = data[ntype].x.to(device)
-            x = self.in_proj[ntype](x)
-            x = F.elu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-            h[ntype] = x
-        return h
-
     def _node_embs(self, data: HeteroData, device) -> Dict[str, torch.Tensor]:
-        h = self._initial_h(data, device)
+        # Инициализация скрытых представлений
+        h = {
+            "pep": self.emb["pep"](torch.arange(data["pep"].num_nodes, device=device)),
+            "mhc": self.emb["mhc"](torch.arange(data["mhc"].num_nodes, device=device)),
+            "tcr": self.emb["tcr"](torch.arange(data["tcr"].num_nodes, device=device)),
+        }
 
         edge_index_dict = {
             ("pep", "binds", "mhc"): data["pep", "binds", "mhc"].edge_index,
             ("mhc", "presents_to", "tcr"): data["mhc", "presents_to", "tcr"].edge_index,
         }
 
-        # прогон через стек HeteroConv с residual, ELU, Dropout
         for conv in self.layers:
-            out = conv(h, edge_index_dict)
+            out = conv(h, edge_index_dict)  # вернёт dst-типы ('mhc', 'tcr')
+            # residual + ELU + Dropout
             new_h = {}
             for k in h.keys():
-                x = out.get(k, h[k])
-                if x.shape[-1] == h[k].shape[-1]:
-                    x = x + h[k]  # residual
-                x = F.elu(x)
-                x = F.dropout(x, p=self.dropout, training=self.training)
-                new_h[k] = x
+                if k in out:
+                    x = out[k]
+                    if x.shape[-1] == h[k].shape[-1]:
+                        x = x + h[k]
+                    x = F.elu(x)
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+                    new_h[k] = x
+                else:
+                    new_h[k] = h[k]
             h = new_h
         return h
 
     def forward_logits(self, data: HeteroData, device, pack: Dict[str, torch.Tensor]) -> torch.Tensor:
         h = self._node_embs(data, device)
-        hp = h["pep"][pack["pep"]]
-        hm = h["mhc"][pack["mhc"]]
-        ht = h["tcr"][pack["tcr"]]
+        hp = self.proj_pep(h["pep"])[pack["pep"]]
+        hm = self.proj_mhc(h["mhc"])[pack["mhc"]]
+        ht = self.proj_tcr(h["tcr"])[pack["tcr"]]
         return self.head(torch.cat([hp, hm, ht], dim=-1)).squeeze(-1)
 
-
+# ------------------------- training -------------------------
 class Runner:
     def __init__(self, cfg: Config, data: HeteroData):
         self.cfg = cfg
@@ -372,13 +270,16 @@ class Runner:
             for k,v in data[split].items():
                 data[split][k] = v.to(self.device)
 
-        self.model = TripletGAT(in_dim_pep = int(data["pep"].x.size(1)),
-                                in_dim_mhc = int(data["mhc"].x.size(1)),
-                                in_dim_tcr = int(data["tcr"].x.size(1)),
-                                hidden = self.cfg.hidden,
-                                layers = self.cfg.layers,
-                                dropout = self.cfg.dropout,
-                                heads = 4).to(self.device)
+        self.model = TripletGAT(
+            n_pep=data["pep"].num_nodes,
+            n_mhc=data["mhc"].num_nodes,
+            n_tcr=data["tcr"].num_nodes,
+            emb_dim=cfg.emb_dim,
+            hidden=cfg.hidden,
+            layers=cfg.layers,
+            dropout=cfg.dropout,
+            heads=4,
+        ).to(self.device)
 
         self.opt = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         self.crit = nn.BCEWithLogitsLoss()
@@ -424,12 +325,25 @@ class Runner:
         if best_state is not None:
             self.model.load_state_dict(best_state)
         te_loss, te_m = self._step("triplet_test", train_mode=False)
+        va_loss, va_m = self._step("triplet_valid", train_mode=False)
         print(json.dumps({"best_val_pr_auc": best_val_pr, "test_loss": te_loss, "test": te_m}))
-        return {"best_val_pr_auc": best_val_pr, "test": te_m, "ckpt": self.cfg.ckpt_path}
+        # return {"best_val_pr_auc": best_val_pr, "test": te_m, "ckpt": self.cfg.ckpt_path}
+        return va_loss
 
 
-def main():
-    cfg = Config()
+def train_model(
+    emb_dim: int = 128,
+    hidden: int = 256,
+    layers: int = 2,
+    dropout: float = 0.2,
+
+    epochs: int = 30,
+    lr: float = 2e-3,
+    weight_decay: float = 1e-4,
+    early_patience: int = 6,
+):
+
+    cfg = Config(emb_dim=emb_dim, hidden=hidden, layers=layers, dropout=dropout, epochs=epochs, lr=lr, weight_decay=weight_decay, early_patience=early_patience)
     set_seed(cfg.seed)
 
     gb = TripletGraph(train_df_labeled, test_df_labeled, cfg)
@@ -441,6 +355,25 @@ def main():
     return res
 
 
+def objective(trial):
+    # Определяем пространство поиска гиперпараметров
+    lr = trial.suggest_float('learning_rate', 1e-5, 1e-1, log=True)
+    emb_dim = trial.suggest_int('embedding_dimension', 8, 256)
+    hidden = trial.suggest_int('hidden_dimension', 8, 256)
+    layers = trial.suggest_int('layers', 1, 4)
+    epochs = trial.suggest_int('epochs', 10, 100)
+
+    # Выполняем тренировку с выбранными параметрами
+    test_loss = train_model(lr=lr, emb_dim=emb_dim, hidden=hidden, layers=layers, epochs=epochs)
+
+    # Минимизируем потерю
+    return test_loss
+
+
 torch.set_float32_matmul_precision("high")
 if __name__ == "__main__":
-    main()
+    study = optuna.create_study(direction='minimize')  # Создаем объект исследования с целью минимизировать тестовую ошибку
+    study.optimize(objective, n_trials=100)  # Проводим заданное количество итераций поиска лучших гиперпараметров
+
+    print("Лучшая комбинация гиперпараметров:", study.best_params)
+    print("Минимальное значение потерь:", study.best_value)

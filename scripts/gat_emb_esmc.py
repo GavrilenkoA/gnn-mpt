@@ -91,13 +91,13 @@ class Config:
 
     emb_dim: int = 128
     hidden: int = 256
-    layers: int = 2
+    layers: int = 1
     dropout: float = 0.2
 
-    epochs: int = 30
-    lr: float = 2e-3
+    epochs: int = 60
+    lr: float = 2e-4
     weight_decay: float = 1e-4
-    device: str = "cuda:1"
+    device: str = "cuda"
 
     early_patience: int = 6
     ckpt_path: str = "best_triplet.pt"
@@ -200,10 +200,12 @@ class TripletGraph:
         self.data: HeteroData = None
 
         # банки эмбеддингов
-        self.pep_bank = load_bank('/home/team/data/embeddings/raw/peptides_data.npz')
-        self.tcr_bank = load_bank('/home/team/data/embeddings/raw/tcr_data.npz')
-        self.mhc_bank = load_bank('/home/team/data/embeddings/raw/cd .npz')
-
+        # self.pep_bank = load_bank('/home/team/data/esmc_embeddings/peptides_esmc_600m.npz')
+        # self.tcr_bank = load_bank('/home/team/data/esmc_embeddings/tcr_esmc_600m.npz')
+        # self.mhc_bank = load_bank('/home/team/data/esmc_embeddings/mhc_esmc_600m.npz')
+        self.pep_bank = load_bank('/home/team/data/embeddings/peptides_data.npz')
+        self.tcr_bank = load_bank('/home/team/data/embeddings/tcr_data.npz')
+        self.mhc_bank = load_bank('/home/team/data/embeddings/mhc_data.npz')
     def build_id_maps(self):
         all_p = pd.Index(pd.unique(pd.concat([self.df_tr_all["Antigen"], self.df_te_all["Antigen"]])))
         all_m = pd.Index(pd.unique(pd.concat([self.df_tr_all["HLA"],     self.df_te_all["HLA"]    ])))

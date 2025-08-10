@@ -95,11 +95,11 @@ class Config:
     dropout: float = 0.2
 
     epochs: int = 30
-    lr: float = 2e-3
+    lr: float = 2e-4
     weight_decay: float = 1e-4
-    device: str = "cuda:1"
+    device: str = "cuda"
 
-    early_patience: int = 6
+    early_patience: int = 15
     ckpt_path: str = "best_triplet.pt"
 
 
@@ -200,9 +200,9 @@ class TripletGraph:
         self.data: HeteroData = None
 
         # банки эмбеддингов
-        self.pep_bank = load_bank('/home/team/data/embeddings/raw/peptides_data.npz')
-        self.tcr_bank = load_bank('/home/team/data/embeddings/raw/tcr_data.npz')
-        self.mhc_bank = load_bank('/home/team/data/embeddings/raw/cd .npz')
+        self.pep_bank = load_bank('/home/team/data/embeddings/pep_embs_biobert.npz')
+        self.tcr_bank = load_bank('/home/team/data/embeddings/tcr_data.npz')
+        self.mhc_bank = load_bank('/home/team/data/embeddings/mhc_data.npz')
 
     def build_id_maps(self):
         all_p = pd.Index(pd.unique(pd.concat([self.df_tr_all["Antigen"], self.df_te_all["Antigen"]])))
@@ -257,9 +257,9 @@ class TripletGraph:
         data["triplet_test"]  = pack(df_te)
 
         # ---------- ВАЖНО: подкладываем pLM эмбеддинги вместо nn.Embedding ----------
-        data["pep"].x = self.pep_bank.subset_by_vocab(self.pid, missing="zeros")  # (|P|, Dp)
-        data["mhc"].x = self.mhc_bank.subset_by_vocab(self.mid, missing="zeros")  # (|M|, Dm)
-        data["tcr"].x = self.tcr_bank.subset_by_vocab(self.tid, missing="zeros")  # (|T|, Dt)
+        data["pep"].x = self.pep_bank.subset_by_vocab(self.pid, missing="random")  # (|P|, Dp)
+        data["mhc"].x = self.mhc_bank.subset_by_vocab(self.mid, missing="random")  # (|M|, Dm)
+        data["tcr"].x = self.tcr_bank.subset_by_vocab(self.tid, missing="random")  # (|T|, Dt)
 
         self.data = data
         return data
