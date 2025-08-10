@@ -27,6 +27,7 @@ test_df  = pd.read_csv(TEST_PATH).drop_duplicates()
 merged_df = test_df.merge(train_df, on=['Antigen', 'HLA', 'CDR3'], how='left', indicator=True)
 test_df = test_df[~test_df.index.isin(merged_df[merged_df['_merge'] == 'both'].index)]
 
+
 # ------------------------- negatives -------------------------
 def generate_triplet_negatives(
     df: pd.DataFrame,
